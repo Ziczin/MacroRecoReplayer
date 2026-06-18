@@ -1,0 +1,36 @@
+# Результаты сборки
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+# Папка Visual Studio
+.vs/
+
+# Пользовательские файлы Visual Studio
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# NuGet
+packages/
+!packages/build/
+
+# Файлы Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Файлы macOS
+.DS_Store
+
+# Временные файлы
+*.log
+*.tmp
+*.temp
