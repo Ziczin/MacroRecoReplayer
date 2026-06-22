@@ -9,8 +9,7 @@ namespace MacroRecoReplayer
         public HelpForm()
         {
             Text = "Справка по хоткеям";
-            // Увеличили ширину на 20% (было 380, стало 460)
-            Size = new Size(460, 260);
+            Size = new Size(520, 400);
             StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -24,6 +23,11 @@ namespace MacroRecoReplayer
                        "Alt + Shift + R -> Остановить запись\n" +
                        "Alt + P         -> Запустить воспроизведение\n" +
                        "Alt + Shift + P -> Остановить воспроизведение\n\n" +
+                       "Дополнительно при записи:\n" +
+                       "Ctrl (одиночно) -> Движение мыши без клика (move)\n\n" +
+                       "Режимы воспроизведения (первая строка скрипта):\n" +
+                       "loop            -> Бесконечный цикл\n" +
+                       "repeat x        -> Повторить макрос x раз\n\n" +
                        "Выбор скрипта и выход доступны в меню трея (ПКМ).",
                 Location = new Point(20, 20),
                 AutoSize = true,
@@ -33,7 +37,7 @@ namespace MacroRecoReplayer
             var btn = new Button
             {
                 Text = "Понятно",
-                Location = new Point(170, 180),
+                Location = new Point(200, 320),
                 Width = 100
             };
 

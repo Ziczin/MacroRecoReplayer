@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -23,6 +24,14 @@ namespace MacroRecoReplayer
 
         private CancellationTokenSource _cts;
         private bool _isPlaying = false;
+
+        // Хешсет для отслеживания реально зажатых клавиш клавиатуры
+        private HashSet<byte> _heldKeys = new HashSet<byte>();
+
+        // Флаги для отслеживания зажатых кнопок мыши
+        private bool _isLeftDown = false;
+        private bool _isRightDown = false;
+        private bool _isMiddleDown = false;
 
         public void StartPlayback()
         {
@@ -54,28 +63,58 @@ namespace MacroRecoReplayer
             {
                 _cts?.Cancel();
                 _isPlaying = false;
-                ReleaseAllKeysAndMouse(); // Отпускаем ВСЁ при ручной остановке
+                ReleaseHeldKeysAndMouse();
                 Logger.Log("Воспроизведение остановлено пользователем.");
             }
         }
 
         private void PlayLoop(string path, CancellationToken ct)
         {
+            // Сбрасываем состояния перед началом проигрывания
+            lock (_heldKeys) _heldKeys.Clear();
+            _isLeftDown = false;
+            _isRightDown = false;
+            _isMiddleDown = false;
+
             string[] lines = File.ReadAllLines(path);
-            bool loop = lines.Length > 0 && lines[0].Trim().StartsWith("loop");
-            int startIdx = loop ? 1 : 0;
+            bool loop = false;
+            int repeatCount = 1;
+            int startIdx = 0;
+
+            if (lines.Length > 0)
+            {
+                string firstLine = lines[0].Trim();
+                if (firstLine.Equals("loop", StringComparison.OrdinalIgnoreCase))
+                {
+                    loop = true;
+                    startIdx = 1;
+                }
+                else if (firstLine.StartsWith("repeat", StringComparison.OrdinalIgnoreCase))
+                {
+                    var parts = firstLine.Split(' ');
+                    if (parts.Length >= 2 && int.TryParse(parts[1], out int r))
+                    {
+                        repeatCount = r <= 0 ? 1 : r;
+                    }
+                    startIdx = 1;
+                }
+            }
 
             if (loop) Logger.Log("Бесконечный цикл активирован.");
+            else if (repeatCount > 1) Logger.Log($"Режим повтора активирован: {repeatCount} раз.");
 
-            int iteration = 0;
-            do
+            int currentIteration = 0;
+            int totalIterations = loop ? int.MaxValue : repeatCount;
+
+            while (currentIteration < totalIterations)
             {
                 if (ct.IsCancellationRequested) break;
+                currentIteration++;
 
-                if (loop)
+                if (loop || repeatCount > 1)
                 {
-                    iteration++;
-                    Logger.Log($"Перезапуск цикла #{iteration}...");
+                    if (currentIteration == 1) Logger.Log("Начало цикла...");
+                    else Logger.Log($"Перезапуск цикла #{currentIteration}...");
                 }
 
                 for (int i = startIdx; i < lines.Length; i++)
@@ -87,24 +126,49 @@ namespace MacroRecoReplayer
                     double delay = double.Parse(parts[0]) * 1000;
                     string action = parts[1];
 
-                    if (action.StartsWith("click_") || action.StartsWith("mouse_"))
+                    if (action == "move")
+                    {
+                        int tx = int.Parse(parts[2]);
+                        int ty = int.Parse(parts[3]);
+                        MoveSmooth(tx, ty, (int)delay, ct);
+                    }
+                    else if (action.StartsWith("click_") || action.StartsWith("mouse_"))
                     {
                         int tx = int.Parse(parts[parts.Length - 2]);
                         int ty = int.Parse(parts[parts.Length - 1]);
                         MoveSmooth(tx, ty, (int)delay, ct);
 
-                        string btn = action.Contains("_l") ? "l" : "r";
-                        uint downFlag = btn == "l" ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_RIGHTDOWN;
-                        uint upFlag = btn == "l" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_RIGHTUP;
+                        // Определяем кнопку (l, r или m)
+                        string btn = "r";
+                        if (action.Contains("_l")) btn = "l";
+                        else if (action.Contains("_m")) btn = "m";
+
+                        uint downFlag = btn == "l" ? MOUSEEVENTF_LEFTDOWN : (btn == "m" ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_RIGHTDOWN);
+                        uint upFlag = btn == "l" ? MOUSEEVENTF_LEFTUP : (btn == "m" ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_RIGHTUP);
 
                         if (action.StartsWith("click_"))
                         {
+                            // Клик не меняет глобальное состояние "зажатости", так как кнопка сразу отпускается
                             mouse_event(downFlag, 0, 0, 0, IntPtr.Zero);
                             Thread.Sleep(10);
                             mouse_event(upFlag, 0, 0, 0, IntPtr.Zero);
                         }
-                        else if (action.EndsWith("down")) mouse_event(downFlag, 0, 0, 0, IntPtr.Zero);
-                        else if (action.EndsWith("up")) mouse_event(upFlag, 0, 0, 0, IntPtr.Zero);
+                        else if (action.EndsWith("down"))
+                        {
+                            mouse_event(downFlag, 0, 0, 0, IntPtr.Zero);
+                            // Запоминаем, что кнопка мыши зажата
+                            if (btn == "l") _isLeftDown = true;
+                            else if (btn == "r") _isRightDown = true;
+                            else if (btn == "m") _isMiddleDown = true;
+                        }
+                        else if (action.EndsWith("up"))
+                        {
+                            mouse_event(upFlag, 0, 0, 0, IntPtr.Zero);
+                            // Убираем из состояния "зажатости"
+                            if (btn == "l") _isLeftDown = false;
+                            else if (btn == "r") _isRightDown = false;
+                            else if (btn == "m") _isMiddleDown = false;
+                        }
                     }
                     else if (action == "key" || action.StartsWith("key_"))
                     {
@@ -115,22 +179,24 @@ namespace MacroRecoReplayer
                             Thread.Sleep(10);
                             keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                         }
-                        else if (action.EndsWith("down")) keybd_event(vk, 0, 0, UIntPtr.Zero);
-                        else if (action.EndsWith("up")) keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                        else if (action.EndsWith("down"))
+                        {
+                            keybd_event(vk, 0, 0, UIntPtr.Zero);
+                            lock (_heldKeys) _heldKeys.Add(vk);
+                        }
+                        else if (action.EndsWith("up"))
+                        {
+                            keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                            lock (_heldKeys) _heldKeys.Remove(vk);
+                        }
 
                         if (delay > 10) Thread.Sleep((int)delay);
                     }
-                    else if (action == "move")
-                    {
-                        int tx = int.Parse(parts[2]);
-                        int ty = int.Parse(parts[3]);
-                        MoveSmooth(tx, ty, (int)delay, ct);
-                    }
                 }
-            } while (loop && !ct.IsCancellationRequested);
+            }
 
             _isPlaying = false;
-            ReleaseAllKeysAndMouse(); // Отпускаем ВСЁ при естественном завершении
+            ReleaseHeldKeysAndMouse();
             if (!ct.IsCancellationRequested) Logger.Log("Воспроизведение завершено.");
         }
 
@@ -195,21 +261,37 @@ namespace MacroRecoReplayer
             }
         }
 
-        // Насильно отпускаем ВСЕ возможные клавиши и кнопки мыши
-        private void ReleaseAllKeysAndMouse()
+        // Отпускаем ТОЛЬКО те клавиши и кнопки мыши, которые реально зажаты в данный момент
+        private void ReleaseHeldKeysAndMouse()
         {
-            // 1. Отпускаем все клавиши клавиатуры (перебираем все возможные VK-коды)
-            for (byte i = 0; i < 255; i++)
+            // 1. Отпускаем клавиши клавиатуры
+            lock (_heldKeys)
             {
-                keybd_event(i, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                foreach (byte vk in _heldKeys)
+                {
+                    keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                }
+                _heldKeys.Clear();
             }
 
-            // 2. Отпускаем все кнопки мыши (левую, правую, среднюю)
-            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
-            mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, IntPtr.Zero);
-            mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, IntPtr.Zero);
+            // 2. Отпускаем только зажатые кнопки мыши
+            if (_isLeftDown)
+            {
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+                _isLeftDown = false;
+            }
+            if (_isRightDown)
+            {
+                mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, IntPtr.Zero);
+                _isRightDown = false;
+            }
+            if (_isMiddleDown)
+            {
+                mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, IntPtr.Zero);
+                _isMiddleDown = false;
+            }
 
-            Logger.Log("Все клавиши и кнопки мыши принудительно отпущены.");
+            Logger.Log("Удерживаемые клавиши и кнопки мыши принудительно отпущены.");
         }
     }
 }

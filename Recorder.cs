@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -18,6 +19,9 @@ namespace MacroRecoReplayer
 
     public class Recorder
     {
+        [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT lpPoint);
+        [StructLayout(LayoutKind.Sequential)] private struct POINT { public int x; public int y; }
+
         private List<RawEvent> _events = new List<RawEvent>();
         private Stopwatch _sw = new Stopwatch();
         private bool _isRecording = false;
@@ -63,7 +67,6 @@ namespace MacroRecoReplayer
             var dlg = new SaveDialog();
             if (dlg.ShowDialog() == DialogResult.OK)
             {
-                // Убираем возможные расширения, если пользователь ввёл их вручную
                 string fileName = dlg.ScriptName.Replace(".txt", "").Replace(".recore", "");
                 string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName + ".recore");
 
@@ -85,6 +88,18 @@ namespace MacroRecoReplayer
                 double delay = isFirst ? 0.5 : (e.Time - lastTs) / 1000.0;
                 if (isFirst) isFirst = false;
                 lastTs = e.Time;
+
+                if (e.Type == "key_down" && e.Name == "ctrl" && i + 1 < _events.Count)
+                {
+                    var next = _events[i + 1];
+                    if (next.Type == "key_up" && next.Name == "ctrl" && (next.Time - e.Time) < 200)
+                    {
+                        lines.Add($"{delay:F2} move {e.X} {e.Y}");
+                        lastTs = next.Time;
+                        i++;
+                        continue;
+                    }
+                }
 
                 if (e.Type == "mouse_down" && i + 1 < _events.Count)
                 {
@@ -130,12 +145,21 @@ namespace MacroRecoReplayer
             {
                 if (down)
                 {
-                    if (!_activeKeys.Add(name)) return; // Игнорируем автоповтор
+                    // Если клавиша уже в списке (автоповтор), игнорируем
+                    if (!_activeKeys.Add(name)) return;
                 }
                 else
                 {
-                    if (!_activeKeys.Remove(name)) return; // Игнорируем лишние отпускания
+                    // Если клавиши нет в списке (лишний release), игнорируем
+                    if (!_activeKeys.Remove(name)) return;
                 }
+            }
+
+            int mx = 0, my = 0;
+            if (name == "ctrl" && down)
+            {
+                GetCursorPos(out POINT p);
+                mx = p.x; my = p.y;
             }
 
             _events.Add(new RawEvent
@@ -143,8 +167,8 @@ namespace MacroRecoReplayer
                 Time = _sw.ElapsedMilliseconds,
                 Type = down ? "key_down" : "key_up",
                 Name = name,
-                X = 0,
-                Y = 0
+                X = mx,
+                Y = my
             });
         }
 
